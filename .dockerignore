@@ -1,0 +1,15 @@
+# What the image is built from should hold only what is needed to run the service.
+
+# Version control and tooling caches
+.git
+.github
+.venv
+__pycache__
+*.py[oc]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# Secrets. Any file holding real values; .env.example is only a template.
+.env
+.env.*
