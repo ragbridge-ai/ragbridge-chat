@@ -1,0 +1,107 @@
+# The demo stack: the core, the gateway and a stand-in host site, started with one command.
+#
+#   docker compose up --build
+#
+# The core needs Ollama on the host (nomic-embed-text and llama3.2), exactly as in its own
+# compose file; without it everything starts, but no question can be answered.
+name: ragbridge-chat-demo
+
+services:
+  core-postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ragbridge
+      POSTGRES_PASSWORD: ragbridge
+      POSTGRES_DB: ragbridge
+    volumes:
+      - core-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragbridge -d ragbridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  core-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  core:
+    # A released core, built from its repository at a tag, so the demo needs no checkout of
+    # it and changes only when the tag does. CORE_REF overrides it, for trying another
+    # version of the core.
+    build:
+      context: https://github.com/ragbridge-ai/ragbridge.git#${CORE_REF:-v1.4.0}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://ragbridge:ragbridge@core-postgres:5432/ragbridge
+      REDIS_URL: redis://core-redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8000"
+    depends_on:
+      core-postgres:
+        condition: service_healthy
+      core-redis:
+        condition: service_healthy
+
+  gateway-postgres:
+    # The gateway's own database: conversations and tenant settings, no vectors.
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ragbridge_chat
+      POSTGRES_PASSWORD: ragbridge_chat
+      POSTGRES_DB: ragbridge_chat
+    volumes:
+      - gateway-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragbridge_chat -d ragbridge_chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build: .
+    image: ragbridge-chat:demo
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://ragbridge_chat:ragbridge_chat@gateway-postgres:5432/ragbridge_chat
+    ports:
+      - "8080:8080"
+    depends_on:
+      gateway-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  demo-site:
+    # The stand-in for the host application. The gateway's image, so nothing more to build,
+    # but none of the gateway's code: it talks to the gateway over HTTP like any other site.
+    image: ragbridge-chat:demo
+    pull_policy: never
+    restart: unless-stopped
+    command: ["uvicorn", "app:app", "--app-dir", "demo/site", "--host", "0.0.0.0", "--port", "8090"]
+    ports:
+      - "8090:8090"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  core-pgdata:
+  gateway-pgdata:
